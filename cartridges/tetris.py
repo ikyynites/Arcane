@@ -73,6 +73,16 @@ COLOURSET: Final[dict[str, Colours]] = {
     "EMPTY":     Colours(FG=Colour(11, 11, 11),    BG=Colour(21, 21, 21, bg=True)),
     "EMPTY_ALT": Colours(FG=Colour(21, 21, 21),    BG=Colour(31, 31, 31, bg=True))
 }
+STATMAP: Final[dict[int, str]] = {
+    8: "TIME",
+    9: "TIME_PLAYING",
+    11: "LEVEL",
+    12: "LEVEL",
+    14: "LINES",
+    15: "LINES_CLEARED",
+    17: "SCORE",
+    18: "SCORE",
+}
 
 LINES_PER_LEVEL: Final[int] = 5
 LOCK_DELAY: Final[float] = 0.5
@@ -233,6 +243,12 @@ class Tetrimino:
     def bottom(self) -> int:
         return max(y for _, y in self.cells())
 
+    @staticmethod
+    def cells_from_ttype(ttype: TType) -> list[tuple[int, int]]:
+        return [(dx, dy)
+                for dy, row in enumerate(T_SHAPES[ttype][0])
+                for dx, cell in enumerate(row) if cell]
+
 class Board:
     DIMS: Final[Vector2] = Vector2(10, 20)
     
@@ -285,6 +301,7 @@ class Tetris(Game):
         
         self.anim_timer: float = 0.0
         self.gravity_timer: float = 0.0
+        self.play_timer: float = 0.0
         self.lock_timer: float = 0.0
         self.lock_resets: int = 0
         
@@ -310,6 +327,19 @@ class Tetris(Game):
     @property
     def queue(self) -> list[TType]:
         return self.bag[::-1]
+
+    @property
+    def time_playing(self) -> str:
+        secs: int = int(self.play_timer)
+        mins: int = secs // 60
+        hours: int = mins // 60
+
+        if hours:
+            return f"DAMN.BOY.{hours:02d}h.{mins % 60:02d}m.{secs % 60:02d}s"
+        if mins:
+            return f"{mins:02d}m.{secs % 60:02d}s"
+        else:
+            return f"{secs:02d}s"
 
     def grounded(self) -> bool:
         return not self.board.fits(self.active_piece.moved(0, 1))
@@ -475,12 +505,14 @@ class Tetris(Game):
                 self.reset()
             return True
         
-        elif self.state is State.PAUSED:
+        if self.state is State.PAUSED:
             if Actions.PAUSE in actions:
                 self.state = State.PLAYING
             return True
+
+        self.play_timer += dt
         
-        elif self.state is State.CLEARING:
+        if self.state is State.CLEARING:
             self.clear_timer += dt
             
             if self.clear_timer >= CLEAR_TIME:
@@ -530,17 +562,19 @@ class Tetris(Game):
     
     def render(self) -> None:
         w, h = Board.DIMS
+
+        fit_stats: bool = self.screen.w >= w * 2 + 32
         
-        left = (self.screen.w - (w * 2 + 4)) // 2
+        left = (self.screen.w - (w * 2 + (32 if fit_stats else 4))) // 2
         top = (self.screen.h - (h + 2)) // 2
         
         active = self.overlay_active()
         flash: bool = self.state is State.CLEARING and int(self.clear_timer / FLASH_STEP) % 2 == 0
         
-        title: str = f"{COLOURSET["BORDER"].BG}{Ansi.FG.BLACK}TETRIS{Ansi.RESET}"
+        title: str = f"{COLOURSET["BORDER"].BG}{Ansi.FG.GREY}[{Ansi.FG.BLACK}TETRIS{Ansi.FG.GREY}]{Ansi.RESET}"
         
-        self.screen.put(left, top, Chars.BORDER * (w + 2))
-        self.screen.put((self.screen.w - len(Ansi.strip(title))) // 2, top, title)
+        self.screen.put(left, top, Chars.BORDER * (w + (16 if fit_stats else 2)))
+        self.screen.put(left + 2 + ((w * 2) - len(Ansi.strip(title))) // 2, top, title)
         
         for y, row in enumerate(self.board.grid):
             cells = [Chars.BORDER]
@@ -556,9 +590,42 @@ class Tetris(Game):
                     cells.append(Chars.EMPTY if x % 2 == 0 else Chars.EMPTY_ALT)
             
             cells.append(Chars.BORDER)
+
+            if fit_stats:
+                match y:
+                    case 0:
+                        cells.append(f" {Ansi.FG.WHITE}NEXT:{Ansi.RESET}      {Chars.BORDER} {Ansi.FG.WHITE}HELD:{Ansi.RESET}      {Chars.BORDER}")
+                    case 6:
+                        cells.append(Chars.BORDER * 14)
+                    case num if num in STATMAP.keys():
+                        if STATMAP.get(num + 1):
+                            cells.append(f"{COLOURSET["BORDER"].BG}{Ansi.FG.BLACK} {f"{STATMAP[num]}:":<25}{Chars.BORDER}")
+                        else:
+                            cells.append(f"{COLOURSET["BORDER"].BG}{Ansi.FG.BLACK} {f"{getattr(self, STATMAP[num].lower())}":.>24} {Chars.BORDER}")
+                    case num if num in (1, 2, 3, 4, 5):
+                        cells.append(f"            {Chars.BORDER}            {Chars.BORDER}")
+                    case num if num in (7, 10, 13, 16, 19):
+                        cells.append(f"                          {Chars.BORDER}")
             
             self.screen.put(left, top + 1 + y, "".join(cells))
-        self.screen.put(left, top + 1 + h, Chars.BORDER * (w + 2))
+    
+        self.screen.put(left, top + 1 + h, Chars.BORDER * (w + (16 if fit_stats else 2)))
+
+        if fit_stats:
+            nh_top: int = top + 3
+            n_left: int = left + (w * 2) + 6
+            h_left: int = left + (w * 2) + 20
+
+            next_cells: list[tuple[int, int]] = Tetrimino.cells_from_ttype(self.queue[0])
+
+            for x, y in next_cells:
+                self.screen.put(n_left + x * 2, nh_top + y, Chars.TETRIMINO(self.queue[0].value))
+
+            if self.held_piece is not None:
+                held_cells: list[tuple[int, int]] = Tetrimino.cells_from_ttype(self.held_piece)
+
+                for x, y in held_cells:
+                    self.screen.put(h_left + x * 2, nh_top + y, Chars.TETRIMINO(self.held_piece.value))
         
         text = self.tag()
         if text:
