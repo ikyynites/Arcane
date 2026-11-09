@@ -423,7 +423,7 @@ class Tetris(Game):
     
     # input handling
     def get_actions(self, key: str | None) -> set[Actions]:
-        names: set[str] = {m for m in ("lctrl", "rctrl", "lshift", "rshift") if self.modifiers.pressed(m)}
+        names: set[str] = {m for m in ("lctrl", "rctrl", "lshift", "rshift", "f1") if self.modifiers.pressed(m)}
         if key is not None:
             names.add(key.lower())
         return {KEYBINDS[n] for n in names if n in KEYBINDS}
