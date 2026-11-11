@@ -124,17 +124,18 @@ class Channel:
             Audio.MCI(f"close {self.alias}")
 
 class Colour:
-    def __init__(self, R: int = 0, G: int = 0, B: int = 0, bg: bool = False) -> None:
+    def __init__(self, R: int = 0, G: int = 0, B: int = 0, bg: bool = False, ul: bool = False) -> None:
         self.R: int = R
         self.G: int = G
         self.B: int = B
         self.bg: bool = bg
+        self.ul: bool = ul
     
     def __str__(self) -> str:
-        return Ansi.RGB(self.R, self.G, self.B, bg=self.bg)
+        return Ansi.RGB(self.R, self.G, self.B, bg=self.bg, ul=self.ul)
     
     @staticmethod
-    def lerp(top: Colour, bottom: Colour, a: float, bg: bool = False) -> Colour:
+    def lerp(top: Colour, bottom: Colour, a: float, bg: bool = False, ul: bool = False) -> Colour:
         r_top, g_top, b_top = top.R, top.G, top.B
         r_bottom, g_bottom, b_bottom = bottom.R, bottom.G, bottom.B
 
@@ -142,7 +143,7 @@ class Colour:
         g = int(((a * g_top) + ((255 - a) * g_bottom)) // 255)
         b = int(((a * b_top) + ((255 - a) * b_bottom)) // 255)
 
-        return Colour(r, g, b, bg=bg)
+        return Colour(r, g, b, bg=bg, ul=ul)
 
 class Ansi:
     CSI: Final[str] = "\x1b["
@@ -159,6 +160,7 @@ class Ansi:
     NOITALIC: Final[str] = CSI + "23m"
     UNDERLINE: Final[str] = CSI + "4m"
     NOUNDERLINE: Final[str] = CSI + "24m"
+    RESETUNDERLINE: Final[str] = CSI + "59m"
     
     class FG:
         _CSI: Final[str] = "\x1b["
@@ -190,7 +192,9 @@ class Ansi:
     _SPLIT = compile(r"(\x1b\[[0-?]*[ -/]*[@-~])")
     
     @staticmethod
-    def RGB(r: int, g: int, b: int, bg: bool = False) -> str:
+    def RGB(r: int, g: int, b: int, bg: bool = False, ul: bool = False) -> str:
+        if ul:
+            return f"{Ansi.CSI}58:2::{r}:{g}:{b}m"
         return f"{Ansi.CSI}{"4" if bg else "3"}8;2;{r};{g};{b}m"
     
     @staticmethod
