@@ -157,6 +157,8 @@ class Ansi:
     NOBOLD: Final[str] = CSI + "22m"
     ITALIC: Final[str] = CSI + "3m"
     NOITALIC: Final[str] = CSI + "23m"
+    UNDERLINE: Final[str] = CSI + "4m"
+    NOUNDERLINE: Final[str] = CSI + "24m"
     
     class FG:
         _CSI: Final[str] = "\x1b["
