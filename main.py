@@ -1,5 +1,6 @@
 from msvcrt import kbhit, getwch
 from os import get_terminal_size
+from platform import system
 from time import sleep
 
 # prevent __pycache__ folders from generating
@@ -11,6 +12,9 @@ from engine import *
 SKIP_BOOT_DBG: bool = True
 
 if __name__ == "__main__":
+    if system().lower() != "windows":
+        raise OSError("arcane is only supported on windows due to use of the \"msvcrt\" module for keyboard input.")
+    
     with Screen(*get_terminal_size(), title="arcane - ikyyn's arcade") as screen:
         # TODO: games planned:
         # 1. tetris
