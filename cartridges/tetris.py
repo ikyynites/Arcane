@@ -83,6 +83,17 @@ STATMAP: Final[dict[int, str]] = {
     17: "SCORE",
     18: "SCORE",
 }
+AUDIOMAP: Final[dict[str, str]] = {
+    "BGM": "tetris/bgm.wav",
+    "MOVE": "tetris/move.wav",
+    "ROTATE": "tetris/rotate.wav",
+    "LINE_CLEAR": "tetris/line-clear.wav",
+    "4_LINE_CLEAR": "tetris/4-line-clear.wav",
+    "LANDED": "tetris/landed.wav",
+    "LANDED_WITH_CLEAR": "tetris/landed-with-clear.wav",
+    "LEVEL_UP": "tetris/level-up.wav",
+    "GAME_OVER": "tetris/game-over.wav"
+}
 
 LINES_PER_LEVEL: Final[int] = 5
 LOCK_DELAY: Final[float] = 0.5
@@ -305,7 +316,7 @@ class Tetris(Game):
         self.lock_timer: float = 0.0
         self.lock_resets: int = 0
         
-        self.screen.audio.play_bgm("tetris-bgm.wav")
+        self.screen.audio.play_bgm(AUDIOMAP["BGM"])
     
     def on_enter(self) -> None:
         return super().on_enter()
@@ -369,7 +380,7 @@ class Tetris(Game):
         if not self.board.fits(self.active_piece):
             self.state = State.GAME_OVER
             self.screen.audio.stop_bgm()
-            self.screen.audio.play_sfx("tetris-game-over.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["GAME_OVER"])
 
     # piece actions
     def commit(self, piece: Tetrimino, by_player: bool) -> None:
@@ -385,13 +396,13 @@ class Tetris(Game):
         moved = self.active_piece.moved(dx, 0)
         if self.board.fits(moved):
             self.commit(moved, by_player=True)
-            self.screen.audio.play_sfx("tetris-move.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["MOVE"])
  
     def try_rotate(self, dr: int) -> None:
         rotated = self.active_piece.rotated(dr)
         if rotated != self.active_piece and self.board.fits(rotated):
             self.commit(rotated, by_player=True)
-            self.screen.audio.play_sfx("tetris-rotate.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["ROTATE"])
 
     def hard_drop(self) -> None:
         while self.board.fits((moved := self.active_piece.moved(0, 1))):
@@ -423,10 +434,10 @@ class Tetris(Game):
             self.clearing_rows = full_rows
             self.clear_timer = 0.0
             self.state = State.CLEARING
-            self.screen.audio.play_sfx("tetris-landed-with-clear.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["LANDED_WITH_CLEAR"])
         else:
             self.spawn(self.draw())
-            self.screen.audio.play_sfx("tetris-landed.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["LANDED"])
 
     def award(self, cleared: int) -> None:
         points: int = LINE_POINTS[cleared] * self.level
@@ -437,9 +448,9 @@ class Tetris(Game):
             self.b2b = True
             
             if cleared == 4:
-                self.screen.audio.play_sfx("tetris-4-line-clear.wav")
+                self.screen.audio.play_sfx(AUDIOMAP["4_LINE_CLEAR"])
             else:
-                self.screen.audio.play_sfx("tetris-line-clear.wav")
+                self.screen.audio.play_sfx(AUDIOMAP["LINE_CLEAR"])
         else:
             self.b2b = False
         
@@ -449,7 +460,7 @@ class Tetris(Game):
         self.lines_cleared += cleared
         
         if self.level > current_level:
-            self.screen.audio.play_sfx("tetris-level-up.wav")
+            self.screen.audio.play_sfx(AUDIOMAP["LEVEL_UP"])
     
     # input handling
     def get_actions(self, key: str | None) -> set[Actions]:
