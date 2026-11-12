@@ -13,6 +13,7 @@ SKIP_BOOT_DBG: bool = True
 
 if __name__ == "__main__":
     if system().lower() != "windows":
+        # TODO: implement cross-platform keyboard input
         raise OSError("arcane is only supported on windows due to use of the \"msvcrt\" module for keyboard input.")
     
     with Screen(*get_terminal_size(), title="arcane - ikyyn's arcade") as screen:

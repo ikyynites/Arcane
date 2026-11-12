@@ -489,7 +489,9 @@ class Menu(Game):
         
         for i, game in enumerate(self.games):
             style = f"> {Ansi.BG.WHITE}{Ansi.FG.BLACK}" if i == self.index else Ansi.FG.GREY
-            self.screen.put(x - (2 if i == self.index else 0), top + i, f"{style}{game.TITLE.center(width)}{Ansi.RESET}")
+            self.screen.put(x - (2 if i == self.index else 0), top + i, f"{style}{game.TITLE.upper().ljust(width, ".")}{Ansi.RESET}")
+            if i == self.index:
+                self.screen.put(x + width, top + i, f" <")
         return
     
     def load_cartridges(self) -> list[type[Game]]:
