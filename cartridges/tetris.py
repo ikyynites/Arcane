@@ -3,7 +3,7 @@ from enum import Enum
 from random import shuffle
 from typing import Callable, Final, NamedTuple
 
-from engine import Game, Screen, Colour, Ansi
+from engine import Ansi, Colour, Game, Screen
 
 type Shape = list[list[int]]
 type Shapes = list[Shape]
