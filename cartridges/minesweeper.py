@@ -1,8 +1,9 @@
 from enum import Enum
 from random import sample
-from typing import Callable, NamedTuple, Final
+from typing import Callable, Final, NamedTuple
 
-from engine import Game, Screen, Colour, Ansi
+from engine import Ansi, Colour, Game, MouseButton, Screen
+
 
 class State(Enum):
     PLAYING = 0
@@ -30,6 +31,14 @@ class Colours(NamedTuple):
     BG: Colour = Colour()
     UL: Colour = Colour()
 
+class Layout(NamedTuple):
+    left: int
+    top: int
+    frame_w: int
+    board_left: int
+    board_top: int
+    board_w: int
+
 KEYBINDS: Final[dict[str, Actions]] = {
     "r": Actions.RESET,
     " ": Actions.REVEAL,
@@ -47,6 +56,7 @@ COLOURSET: Final[dict[str, Colours]] = {
     "CELL":   Colours(FG=Colour(128, 128, 128), BG=Colour(192, 192, 192, bg=True), UL=Colour(128, 128, 128, ul=True)),
     "SMILEY": Colours(FG=Colour(0, 0, 0), BG=Colour(255, 255, 0, bg=True)),
     "7-SEG":  Colours(FG=Colour(255, 0, 0), BG=Colour(0, 0, 0, bg=True)),
+    "FAIL-MINE": Colours(FG=Colour(0, 0, 0), BG=Colour(255, 0, 0, bg=True)),
     
     CHARSET["FLAG"]:   Colours(FG=Colour(255, 0, 255)),
     CHARSET["MINE"]:   Colours(FG=Colour(0, 0, 0)),
@@ -100,6 +110,8 @@ DIFFICULTY_SETTINGS: Final[dict[Difficulty, tuple[Vector2, int]]] = {
     Difficulty.HARD:   (Vector2(30, 16), 99),
 }
 
+# 1 border + 14 bomb rem. + 9 difficulty + 11 title + 9 opposite difficulty + 14 timer + 1 border = 59
+MIN_WIDTH: int = 59
 TITLE_HEIGHT: Final[int] = 5
 
 class Cell:
@@ -107,28 +119,33 @@ class Cell:
         self.is_mine: bool = is_mine
         self.is_revealed: bool = is_revealed
         self.is_flagged: bool = is_flagged
-        self.surrounding: int = 0
+        self.surrounding_mines: int = 0
+        
+        self.marked: bool = False
 
     def __str__(self):
         if self.is_revealed:
-            return CHARSET["MINE"] if self.is_mine else CHARSET["OPEN"] if self.surrounding == 0 else str(self.surrounding)
+            return CHARSET["MINE"] if self.is_mine else CHARSET["OPEN"] if self.surrounding_mines == 0 else str(self.surrounding_mines)
         elif self.is_flagged:
             return CHARSET["FLAG"]
         else:
             return CHARSET["HIDDEN"]
 
-    def reveal(self) -> bool:
-        if not self.is_flagged:
-            self.is_revealed = True
-            return self.is_mine
-        return False
+    def reveal(self) -> None:
+        if self.is_flagged:
+            return
+        
+        self.is_revealed = True
+        return
     
-    def toggle_flag(self):
+    def toggle_flag(self) -> bool:
         if not self.is_revealed:
             self.is_flagged = not self.is_flagged
-    
+            return True
+        return False
+
     def is_empty(self) -> bool:
-        return not self.is_mine and self.surrounding == 0
+        return not self.is_mine and self.surrounding_mines == 0
 
 class Board:
     DIMS: Vector2
@@ -137,7 +154,7 @@ class Board:
     def __init__(self, difficulty: Difficulty = Difficulty.EASY):
         self.DIMS, self.MINES = DIFFICULTY_SETTINGS[difficulty][0], DIFFICULTY_SETTINGS[difficulty][1]
 
-        self.grid: list[list[Cell]] = [[Cell(is_revealed=True) for _ in range(self.DIMS.X)] for _ in range(self.DIMS.Y)]
+        self.grid: list[list[Cell]] = [[Cell() for _ in range(self.DIMS.X)] for _ in range(self.DIMS.Y)]
         
         for idx in sample(range(self.DIMS.X * self.DIMS.Y), self.MINES):
             y, x = divmod(idx, self.DIMS.X)
@@ -146,23 +163,75 @@ class Board:
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if not cell.is_mine:
-                    cell.surrounding = sum(
-                        self.grid[ny][nx].is_mine
-                        for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2))
-                        for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2))
-                        if (ny, nx) != (y, x)
-                    )
+                    cell.surrounding_mines = self.surrounding_mines(x, y)
+    
+    def surrounding_mines(self, x: int, y: int) -> int:
+        return sum(
+            self.grid[ny][nx].is_mine
+            for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2))
+            for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2))
+            if (ny, nx) != (y, x)
+        )
+    
+    def surrounding_flags(self, x: int, y: int) -> int:
+        return sum(
+            self.grid[ny][nx].is_flagged
+            for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2))
+            for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2))
+            if (ny, nx) != (y, x)
+        )
+    
+    def reveal(self, x: int, y: int, by_player: bool = True) -> bool:
+        if not (0 <= x < self.DIMS.X and 0 <= y < self.DIMS.Y):
+            return True
         
-        # temp testing for flag
-        self.grid[0][0].is_revealed = False
-        self.grid[0][0].is_flagged = True
+        cell: Cell = self.grid[y][x]
         
-        # temp testing for hidden and open
-        for y, row in enumerate(self.grid):
-            for x, cell in enumerate(row):
-                if x > self.DIMS.X // 2:
-                    continue
-                cell.is_revealed = False
+        # skip if flagged
+        if cell.is_flagged:
+            return True
+        
+        # if bomb, reveal and return game over
+        if cell.is_mine:
+            cell.reveal()
+            cell.marked = True
+            return False
+        
+        # skip if already revealed
+        if cell.is_revealed:
+            # chording
+            if by_player and self.surrounding_flags(x, y) == cell.surrounding_mines:
+                hit_bomb: bool = False
+                
+                for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2)):
+                    for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2)):
+                        if (ny, nx) == (y, x):
+                            continue
+                        
+                        if not self.reveal(nx, ny, by_player=False):
+                            hit_bomb = True
+                
+                return not hit_bomb
+        
+        cell.reveal()
+        
+        # if the cell is empty, recursively reveal surrounding cells
+        if cell.is_empty():
+            for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2)):
+                for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2)):
+                    if (ny, nx) == (y, x):
+                        continue
+                    
+                    self.reveal(nx, ny, by_player=False)
+            return True
+        
+        return True
+    
+    def is_cleared(self) -> bool:
+        return all(cell.is_revealed or cell.is_flagged for row in self.grid for cell in row)
+    
+    def game_over(self) -> None:
+        return
     
     def flagged_cells(self) -> int:
         return sum(cell.is_flagged for row in self.grid for cell in row)
@@ -200,7 +269,33 @@ class Minesweeper(Game):
         return super().on_exit()
 
     def update(self, key: str | None, dt: float) -> bool:
-        self.play_timer += dt
+        if self.state is State.PLAYING:
+            self.play_timer += dt
+        
+        if self.board.is_cleared() and self.state is State.PLAYING:
+            self.state = State.WON
+        
+        for m in self.screen.input.mouse:
+            if not m.pressed:
+                continue
+            if self.hits_smiley(m.x, m.y):
+                self.reset()
+                continue
+            if self.state is not State.PLAYING:
+                continue
+            
+            cell: tuple[int, int] | None = self.cell_at(m.x, m.y)
+            if cell is None:
+                continue
+            
+            if m.button == MouseButton.LEFT:
+                self.screen.audio.play_sfx("minesweeper/reveal.wav")
+                if not self.board.reveal(cell[0], cell[1]):
+                    self.state = State.GAME_OVER
+                    self.screen.audio.play_sfx("minesweeper/explosion.wav")
+            elif m.button == MouseButton.RIGHT:
+                if self.board.grid[cell[1]][cell[0]].toggle_flag():
+                    self.screen.audio.play_sfx("minesweeper/flag.wav")
         
         if key == "r":
             self.reset()
@@ -213,6 +308,30 @@ class Minesweeper(Game):
         
         return True
 
+    def layout(self) -> Layout:
+        board_w: int = self.board.DIMS.X * 2 + 1
+        frame_w: int = max(MIN_WIDTH, board_w)
+        h: int = self.board.DIMS.Y + 2 + TITLE_HEIGHT
+        left: int = (self.screen.w - frame_w) // 2
+        top: int = (self.screen.h - h) // 2
+        return Layout(left, top, frame_w,
+                  left + (frame_w - board_w) // 2,
+                  top + TITLE_HEIGHT,
+                  board_w)
+    
+    def cell_at(self, cx: int, cy: int) -> Vector2 | None:
+        lay = self.layout()
+        x: int = (cx - lay.board_left) // 2
+        y: int = cy - lay.board_top
+        if 0 <= x < self.board.DIMS.X and 0 <= y < self.board.DIMS.Y:
+            return Vector2(x, y)
+        return None
+    
+    def hits_smiley(self, cx: int, cy: int) -> bool:
+        lay = self.layout()
+        sx: int = lay.left + (lay.frame_w - 2) // 2
+        return cy == lay.top + 3 and sx <= cx < sx + 2
+    
     def render_7_seg(self, x: int, y: int, num: int) -> None:
         num = max(0, min(num, 999))
         num_str = str(num).rjust(3, "0")
@@ -224,11 +343,8 @@ class Minesweeper(Game):
             x += 4
     
     def render(self) -> None:
-        # 1 border + 14 bomb rem. + 9 difficulty + 11 title + 9 opposite difficulty + 14 timer + 1 border = 59
-        MIN_W: int = 59
-
         board_w: int = self.board.DIMS.X * 2 + 1
-        frame_w: int = max(MIN_W, board_w)          # header + padded board width
+        frame_w: int = max(MIN_WIDTH, board_w)          # header + padded board width
         pad_l: int = (frame_w - board_w) // 2       # blank cells left of the board
 
         h: int = self.board.DIMS.Y + 2 + TITLE_HEIGHT
@@ -283,5 +399,9 @@ class Minesweeper(Game):
 
             for x, c in enumerate(row):
                 cc: Colours = COLOURSET.get(str(c), Colours())
+                
+                if c.marked:
+                    cc = COLOURSET["FAIL-MINE"]
+                
                 self.screen.put(board_left + x * 2, row_y,
-                                f"{cell_style}|{cc.FG}{c}{cell.FG}|{Ansi.RESETUNDERLINE}")
+                                f"{cell_style}|{cc.FG}{"" if not c.marked else cc.BG}{c}{cell.FG}|{Ansi.RESETUNDERLINE}")
