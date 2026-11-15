@@ -1,4 +1,6 @@
-from ctypes import byref, create_unicode_buffer, windll, wintypes
+from ctypes import byref, create_unicode_buffer, Structure, Union, windll, wintypes
+from collections import deque
+from enum import IntEnum
 from importlib import import_module
 from msvcrt import getwch, kbhit
 from os import get_terminal_size
@@ -7,7 +9,7 @@ from re import compile
 from sys import stdout
 from threading import Event, Thread
 from time import perf_counter, sleep
-from typing import Final, Iterator
+from typing import Final, Iterator, NamedTuple
 
 type Buffer = list[list[str]]
 
@@ -15,9 +17,24 @@ kernel32 = windll.LoadLibrary("kernel32.dll")
 user32 = windll.LoadLibrary("user32.dll")
 winmm = windll.LoadLibrary("winmm.dll")
 
+# root paths
 AUDIO_ROOT: Final[Path] = Path(__file__).resolve().parent / "assets" / "audio"
 CARTRIDGES_ROOT: Final[Path] = Path(__file__).resolve().parent / "cartridges"
 ICON: Final[Path] = Path(__file__).resolve().parent / "assets" / "ico" / "ico.ico"
+
+# win32 api input event types
+KEY_EVENT: Final[int] =   0x0001
+MOUSE_EVENT: Final[int] = 0x0002
+
+MOUSE_WHEELED: Final[int] =  0x0004
+MOUSE_HWHEELED: Final[int] = 0x0008
+
+# win32 api console mode flags
+ENABLE_VIRTUAL_TERMINAL_PROCESSING: Final[int] = 0x0004
+ENABLE_WRAP_AT_EOL_OUTPUT: Final[int] =          0x0002
+ENABLE_QUICK_EDIT_MODE: Final[int] =             0x0040
+ENABLE_EXTENDED_FLAGS: Final[int] =              0x0080
+ENABLE_MOUSE_INPUT: Final[int] =                 0x0010
 
 MCI_TYPES: Final[dict[str, str]] = {".wav": "waveaudio"}
 
@@ -220,6 +237,118 @@ class Ansi:
     def strip(text: str) -> str:
         return Ansi._PATTERN.sub("", text)
 
+class COORD(Structure):
+    _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+class SMALL_RECT(Structure):
+    _fields_ = [("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
+                ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT)]
+
+class CONSOLE_SCREEN_BUFFER_INFO(Structure):
+    _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD),
+                ("wAttributes", wintypes.WORD), ("srWindow", SMALL_RECT),
+                ("dwMaximumWindowSize", COORD)]
+
+class KEY_EVENT_RECORD(Structure):
+    _fields_ = [("bKeyDown", wintypes.BOOL), ("wRepeatCount", wintypes.WORD),
+                ("wVirtualKeyCode", wintypes.WORD), ("wVirtualScanCode", wintypes.WORD),
+                ("UnicodeChar", wintypes.WCHAR), ("dwControlKeyState", wintypes.DWORD)]
+
+class MOUSE_EVENT_RECORD(Structure):
+    _fields_ = [("dwMousePosition", COORD), ("dwButtonState", wintypes.DWORD),
+                ("dwControlKeyState", wintypes.DWORD), ("dwEventFlags", wintypes.DWORD)]
+
+class INPUT_RECORD(Structure):
+    class _Event(Union):
+        _fields_ = [("KeyEvent", KEY_EVENT_RECORD),
+                    ("MouseEvent", MOUSE_EVENT_RECORD)]
+    _anonymous_ = ("Event",)
+    _fields_ = [("EventType", wintypes.WORD), ("Event", _Event)]
+
+class MouseButton(IntEnum):
+    LEFT = 1
+    RIGHT = 2
+    MIDDLE = 3
+
+class MouseEvent(NamedTuple):
+    x: int
+    y: int
+    button: MouseButton
+    pressed: bool
+
+class Input:
+    _ARROWS: Final[dict[int, str]] = {0x25: "LEFT", 0x26: "UP", 0x27: "RIGHT", 0x28: "DOWN"}
+    _BUTTON_MASK: Final[int] = 0x0007
+    
+    def __init__(self) -> None:
+        self._h_in = kernel32.GetStdHandle(-10)
+        self._h_out = kernel32.GetStdHandle(-11)
+        self._records = (INPUT_RECORD * 64)()
+        self._buttons: int = 0
+        self._keys: deque[str] = deque()
+        self.mouse: list[MouseEvent] = []
+    
+    def held(self, button: MouseButton) -> bool:
+        return bool(self._buttons & button)
+    
+    def next_key(self) -> str | None:
+        return self._keys.popleft() if self._keys else None
+    
+    def poll(self) -> None:
+        self.mouse = []
+        
+        pending: wintypes.DWORD = wintypes.DWORD()
+        kernel32.GetNumberOfConsoleInputEvents(self._h_in, byref(pending))
+        remaining: int = pending.value
+        
+        while remaining > 0:
+            read: wintypes.DWORD = wintypes.DWORD()
+            kernel32.ReadConsoleInputW(self._h_in, self._records, min(remaining, len(self._records)), byref(read))
+            
+            if not read.value:
+                break
+            remaining -= read.value
+            
+            for i in range(read.value):
+                record: INPUT_RECORD = self._records[i]
+                
+                if record.EventType == KEY_EVENT:
+                    self._on_key(record.KeyEvent)
+                elif record.EventType == MOUSE_EVENT:
+                    self._on_mouse(record.MouseEvent)
+    
+    def _on_key(self, event: KEY_EVENT_RECORD) -> None:
+        if not event.bKeyDown:
+            return
+        if event.wVirtualKeyCode in self._ARROWS:
+            self._keys.append(self._ARROWS[event.wVirtualKeyCode])
+        elif event.UnicodeChar:
+            self._keys.append(event.UnicodeChar)
+    
+    def _on_mouse(self, event: MOUSE_EVENT_RECORD) -> None:
+        if event.dwEventFlags & (MOUSE_WHEELED | MOUSE_HWHEELED):
+            return
+        
+        state: int = event.dwButtonState & self._BUTTON_MASK
+        changed: int = state ^ self._buttons
+        self._buttons = state
+        
+        if not changed:
+            return
+        
+        left, top = self._window_origin()
+        x: int = event.dwMousePosition.X - left
+        y: int = event.dwMousePosition.Y - top
+        
+        for button in MouseButton:
+            if changed & button:
+                self.mouse.append(MouseEvent(x, y, button, bool(state & button)))
+    
+    def _window_origin(self) -> tuple[int, int]:
+        info = CONSOLE_SCREEN_BUFFER_INFO()
+        kernel32.GetConsoleScreenBufferInfo(self._h_out, byref(info))
+        return info.srWindow.Left, info.srWindow.Top
+
 class Screen:
     HWND: Final = kernel32.GetConsoleWindow()
     
@@ -228,6 +357,7 @@ class Screen:
             self.set_title(title)
         self.set_icon(ICON)
         
+        self.input: Input = Input()
         self.audio: Audio = Audio(AUDIO_ROOT)
         
         self.w: int = w
@@ -251,12 +381,6 @@ class Screen:
         kernel32.GetConsoleMode(self.h_stdout, byref(self.mode_out))
         kernel32.GetConsoleMode(self.h_stdin, byref(self.mode_in))
         
-        # win32 api console mode flags
-        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-        ENABLE_WRAP_AT_EOL_OUTPUT = 0x0002
-        ENABLE_QUICK_EDIT_MODE = 0x0040
-        ENABLE_EXTENDED_FLAGS = 0x0080
-        
         # arcane stdout mode
         self.a_mode_out: int = self.mode_out.value
         self.a_mode_out |= ENABLE_VIRTUAL_TERMINAL_PROCESSING
@@ -264,7 +388,7 @@ class Screen:
         
         # arcane stdin mode
         self.a_mode_in: int = self.mode_in.value
-        self.a_mode_in |= ENABLE_EXTENDED_FLAGS
+        self.a_mode_in |= ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT
         self.a_mode_in &= ~ENABLE_QUICK_EDIT_MODE
         
         # apply custom arcane console modes
@@ -316,8 +440,7 @@ class Screen:
         stdout.flush()
         
         self.front, self.back = [self.back[i] if not all(cell == " " for cell in self.back[i]) > 0 else self.front[i] for i in range(len(self.front))], [[" "] * self.w for _ in range(self.h)]
-        
-    
+
     def check_resize(self) -> None:
         w, h = get_terminal_size()
         
@@ -350,15 +473,6 @@ class Screen:
         
         user32.SendMessageW(Screen.HWND, WM_SETICON, ICON_SMALL, small)
         user32.SendMessageW(Screen.HWND, WM_SETICON, ICON_BIG, big)
-
-    @staticmethod
-    def get_key() -> str | None:
-        if not kbhit():
-            return None
-        ch: str = getwch()
-        if ch in ("\x00", "\xe0"):
-            return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(getwch())
-        return ch
     
     @staticmethod
     def has_focus() -> bool:
@@ -417,7 +531,8 @@ class Game:
 
                 self.screen.check_resize()
                 self.modifiers.poll()
-                key: str | None = Screen.get_key()
+                self.screen.input.poll()
+                key: str | None = self.screen.input.next_key()
 
                 if key in ("q", "Q"):
                     break
