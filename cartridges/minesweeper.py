@@ -222,16 +222,18 @@ class Board:
                     if (ny, nx) == (y, x):
                         continue
                     
-                    self.reveal(nx, ny, by_player=False)
+                    empty_cell: Cell = self.grid[ny][nx]
+
+                    if empty_cell.is_empty():
+                        self.reveal(nx, ny, by_player=False)
+                    else:
+                        empty_cell.reveal()
             return True
         
         return True
     
     def is_cleared(self) -> bool:
-        return all(cell.is_revealed or cell.is_flagged for row in self.grid for cell in row)
-    
-    def game_over(self) -> None:
-        return
+        return all(cell.is_revealed or cell.is_mine for row in self.grid for cell in row)
     
     def flagged_cells(self) -> int:
         return sum(cell.is_flagged for row in self.grid for cell in row)
@@ -344,7 +346,7 @@ class Minesweeper(Game):
     
     def render(self) -> None:
         board_w: int = self.board.DIMS.X * 2 + 1
-        frame_w: int = max(MIN_WIDTH, board_w)          # header + padded board width
+        frame_w: int = max(MIN_WIDTH, board_w)      # header + padded board width
         pad_l: int = (frame_w - board_w) // 2       # blank cells left of the board
 
         h: int = self.board.DIMS.Y + 2 + TITLE_HEIGHT
