@@ -1,6 +1,6 @@
 from enum import Enum
 from random import sample
-from typing import Callable, Final, NamedTuple
+from typing import Callable, Final, Iterator, NamedTuple
 
 from engine import Ansi, Colour, Game, MouseButton, Screen
 
@@ -41,8 +41,6 @@ class Layout(NamedTuple):
 
 KEYBINDS: Final[dict[str, Actions]] = {
     "r": Actions.RESET,
-    " ": Actions.REVEAL,
-    "f": Actions.FLAG,
     "+": Actions.DIFFICULTY_UP,
     "-": Actions.DIFFICULTY_DOWN
 }
@@ -170,7 +168,7 @@ class Board:
             self.grid[ny][nx].is_mine
             for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2))
             for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2))
-            if (ny, nx) != (y, x)
+            if (nx, ny) != (x, y)
         )
     
     def surrounding_flags(self, x: int, y: int) -> int:
@@ -178,62 +176,76 @@ class Board:
             self.grid[ny][nx].is_flagged
             for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2))
             for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2))
-            if (ny, nx) != (y, x)
+            if (nx, ny) != (x, y)
         )
-    
-    def reveal(self, x: int, y: int, by_player: bool = True) -> bool:
+
+    def neighbors(self, x: int, y: int) -> Iterator[tuple[int, int]]:
+        for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2)):
+            for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2)):
+                if (nx, ny) != (x, y):
+                    yield nx, ny
+
+    def reveal(self, x: int, y: int) -> bool:
         if not (0 <= x < self.DIMS.X and 0 <= y < self.DIMS.Y):
             return True
-        
+
         cell: Cell = self.grid[y][x]
-        
-        # skip if flagged
         if cell.is_flagged:
             return True
-        
-        # if bomb, reveal and return game over
+
+        if cell.is_revealed:
+            return self.chord(x, y)
+
         if cell.is_mine:
             cell.reveal()
             cell.marked = True
             return False
-        
-        # skip if already revealed
-        if cell.is_revealed:
-            # chording
-            if by_player and self.surrounding_flags(x, y) == cell.surrounding_mines:
-                hit_bomb: bool = False
-                
-                for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2)):
-                    for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2)):
-                        if (ny, nx) == (y, x):
-                            continue
-                        
-                        if not self.reveal(nx, ny, by_player=False):
-                            hit_bomb = True
-                
-                return not hit_bomb
-        
-        cell.reveal()
-        
-        # if the cell is empty, recursively reveal surrounding cells
-        if cell.is_empty():
-            for ny in range(max(0, y - 1), min(self.DIMS.Y, y + 2)):
-                for nx in range(max(0, x - 1), min(self.DIMS.X, x + 2)):
-                    if (ny, nx) == (y, x):
-                        continue
-                    
-                    empty_cell: Cell = self.grid[ny][nx]
 
-                    if empty_cell.is_empty():
-                        self.reveal(nx, ny, by_player=False)
-                    else:
-                        empty_cell.reveal()
-            return True
-        
+        self.reveal_area(x, y)
         return True
-    
+
+    def reveal_area(self, x: int, y: int) -> None:
+        pending: list[tuple[int, int]] = [(x, y)]
+        visited: set[tuple[int, int]] = set()
+
+        while pending:
+            px, py = pending.pop()
+            if (px, py) in visited:
+                continue
+
+            visited.add((px, py))
+            cell = self.grid[py][px]
+            if cell.is_flagged or cell.is_revealed or cell.is_mine:
+                continue
+
+            cell.reveal()
+            if cell.is_empty():
+                pending.extend(self.neighbors(px, py))
+
+    def chord(self, x: int, y: int) -> bool:
+        cell = self.grid[y][x]
+        if self.surrounding_flags(x, y) != cell.surrounding_mines:
+            return True
+
+        hit_mine = False
+        for nx, ny in self.neighbors(x, y):
+            neighbor = self.grid[ny][nx]
+            if neighbor.is_flagged or neighbor.is_revealed:
+                continue
+            if neighbor.is_mine:
+                neighbor.reveal()
+                neighbor.marked = True
+                hit_mine = True
+            else:
+                self.reveal_area(nx, ny)
+
+        return not hit_mine
+
     def is_cleared(self) -> bool:
         return all(cell.is_revealed or cell.is_mine for row in self.grid for cell in row)
+    
+    def game_over(self) -> None:
+        return
     
     def flagged_cells(self) -> int:
         return sum(cell.is_flagged for row in self.grid for cell in row)
@@ -299,12 +311,12 @@ class Minesweeper(Game):
                 if self.board.grid[cell[1]][cell[0]].toggle_flag():
                     self.screen.audio.play_sfx("minesweeper/flag.wav")
         
-        if key == "r":
+        if key == KEYBINDS["RESET"]:
             self.reset()
-        if key == "+":
+        if key == KEYBINDS["DIFFICULTY_UP"]:
             if self.difficulty is not Difficulty.HARD:
                 self.reset(Difficulty(self.difficulty.value + 1))
-        if key == "-":
+        if key == KEYBINDS["DIFFICULTY_DOWN"]:
             if self.difficulty is not Difficulty.EASY:
                 self.reset(Difficulty(self.difficulty.value - 1))
         
@@ -346,7 +358,7 @@ class Minesweeper(Game):
     
     def render(self) -> None:
         board_w: int = self.board.DIMS.X * 2 + 1
-        frame_w: int = max(MIN_WIDTH, board_w)      # header + padded board width
+        frame_w: int = max(MIN_WIDTH, board_w)          # header + padded board width
         pad_l: int = (frame_w - board_w) // 2       # blank cells left of the board
 
         h: int = self.board.DIMS.Y + 2 + TITLE_HEIGHT
